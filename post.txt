@@ -1,0 +1,45 @@
+Over the last few months i have been running a TC script to control the bandwidth consumed per IP. It has worked remarkably well so far so i thought i would share what i have been using. You will need to make sure that your system has TC installed, any modern Linux flavour should have this. I run my PMS on centos 6.6 and the script worked out the box with only a few mods needed to make it work, these are reflected in the script posted below. Copy the script below and save it as a shell script on your system, name is unimportant, just make sure permissions are correct.
+
+#!/bin/bash
+NETCARD=eth0
+MAXBANDWIDTH=1000000
+
+# reinit
+tc qdisc del dev $NETCARD root handle 1
+tc qdisc add dev $NETCARD root handle 1: htb default 9999
+
+# create the default class
+tc class add dev $NETCARD parent 1:0 classid 1:9999 htb rate $(( $MAXBANDWIDTH ))kbit ceil $(( $MAXBANDWIDTH ))kbit burst 100k prio 9999
+
+# control bandwidth per IP
+declare -A ipctrl
+# define list of IP and bandwidth (in kilo bits per seconds) below
+ipctrl[IP ADDRESS OF USER HERE]="MAX Kb PER IP HERE"
+
+mark=0
+for ip in "${!ipctrl[@]}"
+do
+    mark=$(( mark + 1 ))
+    bandwidth=${ipctrl[$ip]}
+
+    # traffic shaping rule
+    tc class add dev $NETCARD parent 1:0 classid 1:$mark htb rate $(( $bandwidth ))kbit ceil $(( $bandwidth ))kbit burst 3kbit prio $mark
+    #tc class add dev $NETCARD parent 1:0 classid 1:$mark htb rate 2048kbit ceil 2048kbit burst 3kbit prio $mark
+
+    # netfilter packet marking rule
+    iptables -t mangle -A INPUT -i $NETCARD -s $ip -j CONNMARK --set-mark $mark
+
+    # filter that bind the two
+    tc filter add dev $NETCARD parent 1:0 protocol ip prio $mark handle $mark fw flowid 1:$mark
+
+    echo "IP $ip is attached to mark $mark and limited to $bandwidth kbps"
+done
+
+#propagate netfilter marks on connections
+iptables -t mangle -A POSTROUTING -j CONNMARK --restore-mark
+change NETCARD to the interface name of your nic that PMS is served through
+change MAXBANDWIDTH to the interface speed of you NIC from above
+starting at line 15 enter your users ip addresses you want to limit as an example the line/s would look like this, inside the brackets in the users ip address, in the double quotes enter their max bandwidth in Kb.
+ipctrl[127.0.0.1]="1536" # limit this user to 1.5Mb
+ipctrl[127.0.0.2]="2048" # limit this user to 2Mb
+after entering your users IP addresses execute the script, in the future after making changes to users just re-execute the script. After this you can verify it's working by using IFTOP.
